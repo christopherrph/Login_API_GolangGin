@@ -4,7 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"io/ioutil"
+
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
@@ -14,16 +15,26 @@ var connStr string
 var err error
 var db *sql.DB
 var ctx context.Context
+var Salt = "54lTB4e"
+
+// type LoginForm struct {
+// 	User     string `form:"user" binding:"required"`
+// 	Password string `form:"password" binding:"required"`
+// }
 
 func PostBody(c *gin.Context) {
-	body := c.Request.Body
-	value, err := ioutil.ReadAll(body)
-	if err != nil {
-		fmt.Println(err.Error())
-	}
 	c.JSON(200, gin.H{
-		"message": string(value),
+		"Form Data": c.PostForm("username"),
 	})
+
+	// body := c.Request.Body
+	// value, err := ioutil.ReadAll(body)
+	// if err != nil {
+	// 	fmt.Println(err.Error())
+	// }
+	// c.JSON(200, gin.H{
+	// 	"message": string(value),
+	// })
 }
 
 func Home(c *gin.Context) {
@@ -32,24 +43,38 @@ func Home(c *gin.Context) {
 	})
 }
 
+type User struct {
+	Username string `json: username`
+	Password string `json: password`
+}
+
+func HashPassword(password string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	return string(bytes), err
+}
+
 func Register(c *gin.Context) {
-	username := c.Query("username")
-	password := c.Query("password")
-	sqlStatement := fmt.Sprintf(`INSERT INTO "user" (user_username,user_password,user_status) VALUES ('%s', '%s', 'Active')`, username, password)
+	var u User
+	c.BindJSON(&u)
+	username := u.Username
+	password := u.Password
+	saltedpassword := password + Salt
+	hash, _ := HashPassword(saltedpassword)
+
+	sqlStatement := fmt.Sprintf(`INSERT INTO "user" (user_username,user_password,user_status) VALUES ('%s', '%s', 'Active')`, username, hash)
 	_, err = db.Exec(sqlStatement)
 	if err != nil {
 		panic(err)
 	}
 	c.JSON(200, gin.H{
-		"Message":    "User Addedd Succesfully!",
-		"Username: ": username,
-		"Password: ": password,
+		"Message":  "User Addedd Succesfully!",
+		"Username": username,
+		"Password": password,
 	})
 }
 
 func GetUser(c *gin.Context) {
 	username := c.Query("username")
-	fmt.Println(username)
 	sqlStatement := fmt.Sprintf(`SELECT "user_username" FROM "user" WHERE user_username = '%s'`, username)
 	rows, err := db.Query(sqlStatement)
 	if err != nil {
@@ -59,7 +84,6 @@ func GetUser(c *gin.Context) {
 	for rows.Next() {
 		rows.Scan(&user_username)
 	}
-	fmt.Println(len(user_username))
 
 	if len(user_username) == 0 {
 		c.JSON(200, gin.H{"data": "Username Available"})
@@ -70,24 +94,40 @@ func GetUser(c *gin.Context) {
 	}
 }
 
+func comparePasswords(hashedPwd string, plainPwd []byte) bool {
+	// Since we'll be getting the hashed password from the DB it
+	// will be a string so we'll need to convert it to a byte slice
+	byteHash := []byte(hashedPwd)
+	err := bcrypt.CompareHashAndPassword(byteHash, plainPwd)
+	if err != nil {
+		fmt.Println(err)
+		return false
+	}
+	return true
+}
+
 func Login(c *gin.Context) {
-	username := c.Query("username")
-	password := c.Query("password")
-	fmt.Println(username)
-	fmt.Println(password)
-	sqlStatement := fmt.Sprintf(`SELECT "id_user" FROM "user" WHERE user_username = '%s' AND user_password = '%s'`, username, password)
+	var u User
+	c.BindJSON(&u)
+	username := u.Username
+	password := u.Password
+	saltedpassword := password + Salt // passnya dikasi salt
+
+	sqlStatement := fmt.Sprintf(`SELECT "user_password" FROM "user" WHERE user_username = '%s'`, username)
 	rows, err := db.Query(sqlStatement)
 	if err != nil {
 		fmt.Println("Failed ", err)
 	}
-	var id_user int
+	var passuserDB string
 	for rows.Next() {
-		rows.Scan(&id_user)
-	}
-	fmt.Println(id_user)
+		rows.Scan(&passuserDB)
+	} // ambil password dari DB yang ud di hash
 
-	if id_user != 0 {
-		c.JSON(200, gin.H{"data": id_user})
+	passwordinput := []byte(saltedpassword)                 // pass yang uda dikasi salt dijadiin byte
+	pwdMatch := comparePasswords(passuserDB, passwordinput) // cek apakah passdiDB(uda di hash) = passinputan user (ga di hash)
+
+	if pwdMatch == true {
+		c.JSON(200, gin.H{"data": "Success!"})
 	} else {
 		c.JSON(400, gin.H{
 			"data": "not found",
@@ -112,7 +152,7 @@ func main() {
 
 	r.GET("/", Home)
 	r.GET("/getuser", GetUser) // getuser?username=blabla
-	r.GET("/login", Login)
+	r.POST("/login", Login)
 	r.POST("/register", Register) // register?username=blabla&password=blabla
 	r.POST("/postbody", PostBody) // pass through body
 	fmt.Println("Server Running on Port: ", 3000)
